@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f4c81" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
+  <title>Combustíveis PT Pro — Simulador, Mapa, Viagens & Ranking</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="/styles.css?v=2" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    .station-item, .rank-item {
+      display: flex !important;
+      flex-wrap: nowrap !important;
+      justify-content: space-between !important;
+      align-items: flex-start !important;
+      gap: 12px !important;
+    }
+    .station-item > div:first-child, .rank-item > div:first-child {
+      flex: 1 1 auto !important;
+      min-width: 0 !important;
+    }
+    .station-item > div:last-child, .rank-item > div:last-child {
+      flex: 0 0 auto !important;
+      white-space: nowrap !important;
+      text-align: right !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Combustíveis PT Pro</h1>
+        <p class="subtitle" id="system-status">Simulador fiscal, mapa interativo DGEG, viagens & ranking nacional</p>
+      </div>
+      <div class="header-actions">
+        <span class="status-msg" id="brent-header-clock" aria-live="polite">A sincronizar...</span>
+        <button type="button" class="btn-small" id="btn-theme" aria-label="Alternar tema claro ou escuro">Modo Escuro</button>
+        <button type="button" class="btn-small" id="btn-sync-top">Atualizar Brent</button>
+      </div>
+    </header>
+
+    <nav class="nav-bar" role="tablist" aria-label="Secções principais">
+      <button type="button" role="tab" aria-selected="true" class="nav-btn active" data-view="view-mapa">1. Mapa & Postos</button>
+      <button type="button" role="tab" aria-selected="false" class="nav-btn" data-view="view-simulador">2. Índices & Simulador Fiscal</button>
+      <button type="button" role="tab" aria-selected="false" class="nav-btn" data-view="view-viagens">3. Viagens & Rota</button>
+      <button type="button" role="tab" aria-selected="false" class="nav-btn" data-view="view-ranking">4. Ranking PT</button>
+    </nav>
+
+    <div class="fuel-grid" role="tablist" aria-label="Tipo de combustível">
+      <button type="button" role="tab" aria-selected="true" class="tab active" id="btn-gasoleo">Gasóleo Simples</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" id="btn-gasoleo_esp">Gasóleo Especial</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" id="btn-gasolina95">Gasolina 95</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" id="btn-gasolina98">Gasolina 98</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" id="btn-gpl">GPL Auto</button>
+    </div>
+
+    <div class="result-box">
+      <div>
+        <div style="font-size:0.88rem;opacity:0.92;" id="fuel-label">Gasóleo Simples — Preço Estimado</div>
+        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
+          <span class="badge-pill" id="tax-weight">Carga fiscal: 47,9%</span>
+          <span class="badge-pill" id="brent-pill">Brent: -- $</span>
+          <span class="badge-pill" id="monday-alert-pill">● A calcular segunda-feira...</span>
+        </div>
+      </div>
+      <div class="result-price" id="final-price">2,078 €/L</div>
+    </div>
+
+    <!-- SEPARADOR 1: MAPA & POSTOS -->
+    <section id="view-mapa" class="view-section active" aria-label="Mapa e postos locais">
+      <div class="card">
+        <div class="card-title">
+          <span>Postos Mais Baratos e Mapa Interativo (DGEG)</span>
+          <span class="status-msg" id="postos-status" aria-live="polite">A iniciar...</span>
+        </div>
+        <div class="grid-3">
+          <div class="field">
+            <label for="localInput">Concelho ou Localidade</label>
+            <div class="input-row">
+              <input type="text" id="localInput" list="pt-localidades" aria-label="Concelho ou Localidade" value="Quarteira" placeholder="Escreva ou escolha..." />
+              <button type="button" class="btn-primary" id="btn-search">Pesquisar</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="radiusSelect">Raio de Distância</label>
+            <select id="radiusSelect">
+              <option value="1">1 km</option>
+              <option value="5">5 km</option>
+              <option value="10" selected>10 km</option>
+              <option value="20">20 km</option>
+              <option value="25">25 km</option>
+              <option value="50">50 km</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="btn-gps">Localização Atual</label>
+            <button type="button" class="btn-small" id="btn-gps">Usar Meu GPS</button>
+          </div>
+        </div>
+        <div class="map-legend">
+          <span><strong style="color:var(--green);">▼</strong> Mais barato</span>
+          <span><strong style="color:var(--amber);">●</strong> Intermédio</span>
+          <span><strong style="color:var(--red);">▲</strong> Mais caro</span>
+          <label class="checkbox-pill"><input type="checkbox" id="filterLowCost" /> Só Low-Cost</label>
+          <label class="checkbox-pill"><input type="checkbox" id="filterNoHighway" /> Excluir Autoestradas</label>
+          <select id="brandFilter" aria-label="Filtrar por marca" style="width:auto;padding:5px 8px;font-size:0.78rem;margin-left:auto;">
+            <option value="">Todas as marcas</option>
+          </select>
+        </div>
+        <div id="map" role="region" aria-label="Mapa interativo de postos"></div>
+        <div id="station-list" style="margin-top:12px;"></div>
+      </div>
+    </section>
+
+    <!-- SEPARADOR 2: SIMULADOR FISCAL -->
+    <section id="view-simulador" class="view-section" aria-label="Simulador fiscal">
+      <div class="card" style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+          <h3 style="margin:0;">Live Ticker — Cotação em Tempo Real</h3>
+          <div style="display:inline-flex;gap:6px;">
+            <button type="button" id="btn-tv-brent" class="btn-primary" style="padding:5px 12px;font-size:0.8rem;" onclick="switchTvSymbol('BZ=F')">Brent (USD/barril)</button>
+            <button type="button" id="btn-tv-eurusd" style="padding:5px 12px;font-size:0.8rem;border-radius:6px;border:1px solid #cbd5e1;cursor:pointer;" onclick="switchTvSymbol('EURUSD=X')">EUR / USD</button>
+          </div>
+        </div>
+        <div id="brent-live-widget" style="height:370px;width:100%;border-radius:8px;overflow:hidden;"></div>
+      </div>
+      <div class="card" style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+          <h3 style="margin:0;">Índices Bolsistas — Portugal, Europa & Mundo</h3>
+          <div style="display:inline-flex;align-items:center;gap:6px;"><span class="badge-pill">Bolsas em Tempo Real</span><button type="button" class="btn-small" style="height:28px;padding:0 10px;font-size:0.75rem;" onclick="refreshMarketsAndComms()">Atualizar</button></div>
+        </div>
+        <div id="markets-live-widget" style="height:430px;width:100%;border-radius:8px;overflow:hidden;"></div>
+      </div>
+      <div class="card" style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+          <h3 style="margin:0;">Commodities — Matérias-Primas</h3>
+          <div style="display:inline-flex;align-items:center;gap:6px;"><span class="badge-pill">Clique num cartão para ver o gráfico</span><button type="button" class="btn-small" style="height:28px;padding:0 10px;font-size:0.75rem;" onclick="refreshMarketsAndComms()">Atualizar</button></div>
+        </div>
+        <div id="commodities-live-widget" style="width:100%;border-radius:8px;overflow:hidden;"></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span>Parâmetros de Mercado e Carga Fiscal</span><span class="status-msg" id="brent-status">A atualizar...</span></div>
+        <div class="grid">
+          <div class="field"><label for="brentUsd">Barril de Brent (USD)</label><div class="input-row"><input type="number" id="brentUsd" value="92.20" step="0.01" /><button type="button" class="btn-small" id="btn-sync">Atualizar</button></div></div>
+          <div class="field"><label for="crackSpread">Margem Refinação (USD/barril)</label><input type="number" id="crackSpread" value="38" step="0.5" /></div>
+          <div class="field"><label for="refinedUsdTon">Cotação Refinado (USD/ton)</label><input type="number" id="refinedUsdTon" value="982" step="1" /></div>
+          <div class="field"><label for="eurUsd">Taxa de Câmbio (EUR/USD)</label><input type="number" id="eurUsd" value="1.0992" step="0.0001" /></div>
+          <div class="field"><label for="density">Densidade (kg/L)</label><input type="number" id="density" value="0.835" step="0.005" /></div>
+          <div class="field"><label for="biofuel">Biocombustíveis (€/L)</label><input type="number" id="biofuel" value="0.115" step="0.005" /></div>
+          <div class="field"><label for="margin">Logística e Margem (€/L)</label><input type="number" id="margin" value="0.195" step="0.005" /></div>
+          <div class="field"><label for="isp">ISP Base (€/L)</label><input type="number" id="isp" value="0.365" step="0.005" /></div>
+          <div class="field"><label for="carbon">Taxa Carbono + CSR (€/L)</label><input type="number" id="carbon" value="0.242" step="0.005" /></div>
+          <div class="field"><label for="vat">IVA (%)</label><select id="vat"><option value="23" selected>Continente (23%)</option><option value="22">Madeira (22%)</option><option value="16">Açores (16%)</option></select></div>
+          <div class="field"><label for="cardDiscount">Desconto Direto / Cartão (€/L)</label><input type="number" id="cardDiscount" value="0.000" step="0.005" min="0" /></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span>Previsão para Segunda-Feira</span></div>
+        <div class="grid">
+          <div class="field"><label for="currentPumpPrice">Preço Médio DGEG Esta Semana (€/L) <small id="dgeg-avg-live-info" style="color:var(--muted);font-weight:500;"></small></label><input type="number" id="currentPumpPrice" value="2.078" step="0.001" /></div>
+          <div class="field"><label for="tankSize">Capacidade do Depósito (Litros)</label><input type="number" id="tankSize" value="50" step="1" /></div>
+        </div>
+        <div class="weekly-result"><span>Variação prevista na segunda-feira:</span><span id="weekly-diff" class="neutral">0,000 €/L (0,00 € / 50L)</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <h3>Histórico (6 Meses) & Tendência Próxima Semana</h3>
+          <button type="button" class="btn-small" id="btn-save-hist">Registar Valor Hoje</button>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="historyChart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          <h3>Notícias — Petróleo &amp; Combustíveis</h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn-primary" id="btn-news-pt" onclick="setNewsTab('pt')">Portugal &amp; Combustíveis</button>
+            <button type="button" class="btn-small" id="btn-news-intl" onclick="setNewsTab('intl')">Internacional / Energia</button>
+            <button type="button" class="btn-small" onclick="renderFuelNews(true)">Atualizar</button>
+          </div>
+        </div>
+        <div id="fuel-news-list" style="margin-top:8px;">
+          <p class="status-msg">A carregar notícias...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEPARADOR 3: VIAGENS & CONSUMO -->
+    <section id="view-viagens" class="view-section" aria-label="Planeador de viagens e consumo">
+      <div class="card">
+        <div class="card-title"><h3>Planeador de Rota & Análise de Desvio</h3></div>
+        <div class="grid-3">
+          <div class="field"><label for="routeOrigin">Origem</label><input type="text" id="routeOrigin" list="pt-localidades" value="Quarteira" placeholder="Ex: Quarteira"></div>
+          <div class="field"><label for="routeDest">Destino</label><input type="text" id="routeDest" list="pt-localidades" value="Lisboa" placeholder="Ex: Lisboa"></div>
+          <div class="field" style="justify-content:flex-end;"><button type="button" class="btn-primary" id="btn-calc-route">Analisar Rota e Postos</button></div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div class="field"><label for="tripDist">Distância Total (km)</label><input type="number" id="tripDist" value="280"></div>
+          <div class="field"><label for="tripCons">Consumo Médio (L/100km)</label><input type="number" id="tripCons" step="0.1" value="5.8"></div>
+          <div class="field"><label for="tripRefillLiters">Litros a Abastecer (L)</label><input type="number" id="tripRefillLiters" value="45"></div>
+        </div>
+        <input type="hidden" id="tripPrice" value="2.030">
+        <div class="kpi-grid" style="margin-top:12px;">
+          <div class="kpi-box"><div class="kpi-val" id="kpi-liters">16,2 L</div><div class="kpi-lbl">Combustível Gasto</div></div>
+          <div class="kpi-box"><div class="kpi-val" id="kpi-cost">32,97 €</div><div class="kpi-lbl">Custo da Viagem</div></div>
+          <div class="kpi-box"><div class="kpi-val" id="kpi-100km">11,77 €</div><div class="kpi-lbl">Custo / 100 km</div></div>
+        </div>
+        <p class="status-msg" id="route-status" aria-live="polite" style="margin-top:12px;">Indique origem e destino para calcular se compensa desviar para abastecer.</p>
+        <div id="route-map" style="height:340px;width:100%;border-radius:10px;margin:12px 0;border:1px solid #cbd5e1;z-index:1;"></div>
+        <div id="route-stations-list"></div>
+      </div>
+    </section>
+
+    <!-- SEPARADOR 4: RANKING NACIONAL & POR REGIÃO -->
+    <section id="view-ranking" class="view-section" aria-label="Ranking nacional de Preços">
+      <div class="card">
+        <div class="card-title">
+          <span>Ranking Nacional DGEG — Top 10 Mais Baratos vs. Mais Caros</span>
+          <div class="input-row" style="align-items:center;">
+            <span class="status-msg" id="ranking-status" aria-live="polite">A aguardar...</span>
+            <select id="rankingScope" aria-label="Âmbito geográfico" style="width:auto;padding:5px 8px;font-size:0.78rem;">
+              <option value="all" selected>Todo o País (Continente + Ilhas)</option>
+              <option value="continente">Apenas Portugal Continental</option>
+            </select>
+          </div>
+        </div>
+        <div class="ranking-split">
+          <div>
+            <h3 style="color:var(--green);margin-bottom:8px;">▼ Top 10 Mais Baratos</h3>
+            <div id="top10-cheapest"></div>
+          </div>
+          <div>
+            <h3 style="color:var(--red);margin-bottom:8px;">▲ Top 10 Mais Caros</h3>
+            <div id="top10-expensive"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>Pesquisa por Distrito e Concelho</span>
+          <span class="status-msg" id="region-count">0 postos listados</span>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="rankingDistrict">Distrito / Região</label>
+            <select id="rankingDistrict"></select>
+          </div>
+          <div class="field">
+            <label for="rankingConcelho">Concelho</label>
+            <select id="rankingConcelho">
+              <option value="">Todos os concelhos</option>
+            </select>
+          </div>
+        </div>
+        <div id="region-stations-list" style="margin-top:12px;"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/app.js?v=160"></script>
+  <datalist id="pt-localidades"></datalist>
+</body>
+</html>

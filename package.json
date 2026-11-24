@@ -1,0 +1,12 @@
+{
+  "name": "combustiveis-pt-pro",
+  "version": "2.1.0",
+  "description": "Simulador fiscal de combustiveis, mapa DGEG, rotas e cotacoes ao vivo em Portugal.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

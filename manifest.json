@@ -1,0 +1,16 @@
+{
+  "name": "Combustíveis PT Pro",
+  "short_name": "Combustíveis PT",
+  "description": "Simulador de preços de combustíveis, mapa interativo DGEG, cálculo de viagens e histórico em Portugal.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#0f4c81",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
