@@ -717,7 +717,7 @@ function loadHistory() {
       var ctx = document.getElementById("historyChart").getContext("2d");
       if (chartInst) chartInst.destroy();
 
-      var nextEst = parseFloat(document.getElementById("final-price").textContent.replace(",", ".")) || 0;
+      var nextEst = parsePrice(document.getElementById("final-price").textContent) || 0;
       var labels = rows.map(function(x) { return String(x.date || "").slice(5); });
       var pumpSeries = rows.map(function(x) { return x.pump; });
       var estSeries = rows.map(function(x) { return x.estimated; });
@@ -746,7 +746,7 @@ function loadHistory() {
 }
 
 function saveHistory() {
-  var estVal = parseFloat(document.getElementById("final-price").textContent.replace(",", ".")) || 0;
+  var estVal = parsePrice(document.getElementById("final-price").textContent) || 0;
   var pumpVal = +document.getElementById("currentPumpPrice").value || estVal;
   fetch("/api/history", {
     method: "POST",
@@ -1575,37 +1575,6 @@ function renderFuelNews(forceFetch) {
     });
 }
 
-// === AUTO_REFRESH_2MIN ===
-(function() {
-  var origFetch = window.fetch;
-  window.fetch = function(url, opts) {
-    if (typeof url === "string" && url.indexOf("/api/") === 0) {
-      url += (url.indexOf("?") >= 0 ? "&" : "?") + "_t=" + Date.now();
-      opts = Object.assign({ cache: "no-store" }, opts || {});
-    }
-    return origFetch.call(this, url, opts);
-  };
-
-  function refreshAllEvery2Min() {
-    var nowStr = new Date().toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    document.querySelectorAll("header span, header small, #last-updated, #header-updated").forEach(function(el) {
-      if (el.textContent && el.textContent.indexOf("Atualizado") >= 0) {
-        el.textContent = "Atualizado Ã s " + nowStr;
-      }
-    });
-    if (typeof cachedIndices !== "undefined") cachedIndices = null;
-    if (typeof cachedComms !== "undefined") cachedComms = null;
-    if (typeof fetchLiveBrentAndFx === "function") fetchLiveBrentAndFx();
-    if (typeof renderBrentLiveTicker === "function") renderBrentLiveTicker();
-    if (typeof renderMarketsWidget === "function") renderMarketsWidget(true);
-    if (typeof renderCommoditiesWidget === "function") renderCommoditiesWidget(true);
-    if (typeof renderNewsWidget === "function") renderNewsWidget(true);
-    if (typeof renderDgegWeeklyChart === "function") renderDgegWeeklyChart();
-  }
-
-  setInterval(refreshAllEvery2Min, 120000);
-})();
-
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
     try {
@@ -1762,5 +1731,128 @@ if ("serviceWorker" in navigator) {
     document.addEventListener("DOMContentLoaded", scheduleReorder);
   } else {
     scheduleReorder();
+  }
+})();
+
+// === AUTO_REFRESH_2MIN (limpo) ===
+(function() {
+  var origFetch = window.fetch;
+  window.fetch = function(url, opts) {
+    if (typeof url === "string" && url.indexOf("/api/") === 0) {
+      url += (url.indexOf("?") >= 0 ? "&" : "?") + "_t=" + Date.now();
+      opts = Object.assign({ cache: "no-store" }, opts || {});
+    }
+    return origFetch.call(this, url, opts);
+  };
+
+  setInterval(function() {
+    var simView = document.getElementById("view-simulador");
+    if (simView && simView.classList.contains("active") && typeof refreshMarketsAndComms === "function") {
+      refreshMarketsAndComms();
+    }
+  }, 120000);
+})();
+
+// --- Auto-localizacao (GPS -> ultima localizacao guardada) ---
+(function initAutoLocationWithFallback() {
+  var LAST_LOC_KEY = "combustiveis_last_location";
+
+  function saveLastLocation(val) {
+    var clean = String(val || "").trim();
+    if (!clean) return;
+    try {
+      localStorage.setItem(LAST_LOC_KEY, JSON.stringify({ name: clean, savedAt: Date.now() }));
+    } catch (_) {}
+  }
+
+  function getLastLocation() {
+    try {
+      var raw = localStorage.getItem(LAST_LOC_KEY);
+      if (!raw) return "";
+      var parsed = JSON.parse(raw);
+      return typeof parsed === "string" ? parsed : (parsed && parsed.name ? parsed.name : "");
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function reverseGeocode(lat, lon) {
+    try {
+      var url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=" +
+        encodeURIComponent(lat) + "&lon=" + encodeURIComponent(lon) + "&zoom=10&addressdetails=1";
+      var res = await fetch(url, { headers: { "Accept": "application/json" } });
+      if (!res.ok) return "";
+      var data = await res.json();
+      var addr = data && data.address ? data.address : {};
+      return addr.city || addr.town || addr.village || addr.municipality || addr.county || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function applyLocationToInput(locName, triggerSearch) {
+    var inp = document.getElementById("localInput");
+    var clean = String(locName || "").trim();
+    if (!inp || !clean) return;
+    inp.value = clean;
+    saveLastLocation(clean);
+    if (triggerSearch && typeof searchLocal === "function") {
+      searchLocal();
+    }
+  }
+
+  function bindLocationSave() {
+    var inp = document.getElementById("localInput");
+    if (inp && !inp.dataset.lastLocBound) {
+      inp.dataset.lastLocBound = "1";
+      if (inp.value && inp.value.trim()) saveLastLocation(inp.value.trim());
+      inp.addEventListener("change", function() { saveLastLocation(inp.value); });
+    }
+    var btnSearch = document.getElementById("btn-search");
+    if (btnSearch && !btnSearch.dataset.lastLocBound) {
+      btnSearch.dataset.lastLocBound = "1";
+      btnSearch.addEventListener("click", function() {
+        var cur = document.getElementById("localInput");
+        if (cur && cur.value && cur.value.trim()) saveLastLocation(cur.value.trim());
+      });
+    }
+  }
+
+  function runAutoGeo() {
+    bindLocationSave();
+    var saved = getLastLocation();
+    var inp = document.getElementById("localInput");
+
+    if (!navigator.geolocation) {
+      if (saved && inp && inp.value.trim() !== saved) applyLocationToInput(saved, false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async function(pos) {
+        var lat = pos && pos.coords ? pos.coords.latitude : null;
+        var lon = pos && pos.coords ? pos.coords.longitude : null;
+        if (typeof lat === "number" && typeof lon === "number") {
+          var place = await reverseGeocode(lat, lon);
+          if (place) {
+            applyLocationToInput(place, true);
+            return;
+          }
+        }
+        if (saved && inp && inp.value.trim() !== saved) applyLocationToInput(saved, false);
+      },
+      function() {
+        if (saved && inp && inp.value.trim() !== saved) {
+          applyLocationToInput(saved, false);
+        }
+      },
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 300000 }
+    );
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function() { setTimeout(runAutoGeo, 400); });
+  } else {
+    setTimeout(runAutoGeo, 400);
   }
 })();
