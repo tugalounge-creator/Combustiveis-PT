@@ -320,8 +320,6 @@ global.fetch = async function(urlInput, opts) {
 
 const http = require("http");
 const https = require("https");
-const fs = require("fs");
-const path = require("path");
 const { URL } = require("url");
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -952,8 +950,6 @@ const server = http.createServer(async (req, res) => {
   }
 
       if (pathname === "/robots.txt") {
-    const fs = require("fs");
-    const path = require("path");
     const filePath = path.join(__dirname, "robots.txt");
     if (fs.existsSync(filePath)) {
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
@@ -962,8 +958,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/sitemap.xml") {
-    const fs = require("fs");
-    const path = require("path");
     const filePath = path.join(__dirname, "sitemap.xml");
     if (fs.existsSync(filePath)) {
       res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
@@ -972,8 +966,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/sw.js") {
-    const fs = require("fs");
-    const path = require("path");
     const filePath = path.join(__dirname, "sw.js");
     if (fs.existsSync(filePath)) {
       res.writeHead(200, {
@@ -985,8 +977,6 @@ const server = http.createServer(async (req, res) => {
   }
 
     if (pathname === "/robots.txt") {
-    const fs = require("fs");
-    const path = require("path");
     const filePath = path.join(__dirname, "robots.txt");
     if (fs.existsSync(filePath)) {
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
@@ -995,8 +985,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/sitemap.xml") {
-    const fs = require("fs");
-    const path = require("path");
     const filePath = path.join(__dirname, "sitemap.xml");
     if (fs.existsSync(filePath)) {
       res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
