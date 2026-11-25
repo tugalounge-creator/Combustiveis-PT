@@ -1610,7 +1610,9 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
     try {
       const reg = await navigator.serviceWorker.register("/sw.js");
-      reg.update();
+      if (reg && (reg.installing || reg.waiting || reg.active)) {
+        reg.update().catch(() => {});
+      }
       let refreshing = false;
       navigator.serviceWorker.addEventListener("controllerchange", () => {
         if (refreshing) return;
