@@ -1748,7 +1748,7 @@ if ("serviceWorker" in navigator) {
     );
   }
 
-  // --- Botao "Baixar App" (PWA) ---
+  // --- Botao "Baixar App" (PWA) no lugar de "Atualizar Brent" ---
   let deferredPrompt = null;
 
   window.addEventListener("beforeinstallprompt", (e) => {
@@ -1757,42 +1757,69 @@ if ("serviceWorker" in navigator) {
     ensureInstallButton();
   });
 
+  function findAtualizarBrentButton() {
+    return Array.from(document.querySelectorAll("button, a")).find((el) =>
+      /atualizar\s*brent/i.test((el.textContent || "").trim())
+    ) || null;
+  }
+
   function ensureInstallButton() {
-    if (document.getElementById("btnBaixarAppPwa")) return;
-    const btn = document.createElement("button");
+    const existing = document.getElementById("btnBaixarAppPwa");
+    const brentBtn = findAtualizarBrentButton();
+
+    const btn = existing || document.createElement("button");
     btn.id = "btnBaixarAppPwa";
     btn.type = "button";
     btn.textContent = "Baixar App";
-    btn.style.cssText = [
-      "position:fixed",
-      "right:16px",
-      "bottom:16px",
-      "z-index:9999",
-      "padding:10px 14px",
-      "border-radius:8px",
-      "border:1px solid rgba(255,255,255,0.22)",
-      "background:#0ea5e9",
-      "color:#ffffff",
-      "font-weight:600",
-      "font-size:13px",
-      "cursor:pointer",
-      "box-shadow:0 6px 18px rgba(0,0,0,0.35)"
-    ].join(";");
 
-    btn.addEventListener("click", async () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt();
-        await deferredPrompt.userChoice.catch(() => {});
-        deferredPrompt = null;
-        return;
-      }
-      const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-      if (isIos) {
-        alert("No iPhone/iPad: toca em Partilhar e depois em 'Adicionar ao Ecra Principal'.");
-      } else {
-        alert("Para instalar a app, abre o menu do navegador e escolhe 'Instalar aplicacao' ou 'Adicionar ao ecra inicial'.");
-      }
-    });
+    if (brentBtn && brentBtn.className) {
+      btn.className = brentBtn.className;
+    } else {
+      btn.style.cssText = [
+        "padding:8px 14px",
+        "border-radius:8px",
+        "border:1px solid rgba(255,255,255,0.22)",
+        "background:#0ea5e9",
+        "color:#ffffff",
+        "font-weight:600",
+        "font-size:13px",
+        "line-height:1.2",
+        "cursor:pointer",
+        "display:inline-flex",
+        "align-items:center",
+        "justify-content:center",
+        "box-shadow:0 2px 8px rgba(0,0,0,0.25)"
+      ].join(";");
+    }
+
+    if (!btn.dataset.pwaClickBound) {
+      btn.dataset.pwaClickBound = "1";
+      btn.addEventListener("click", async () => {
+        if (deferredPrompt) {
+          deferredPrompt.prompt();
+          await deferredPrompt.userChoice.catch(() => {});
+          deferredPrompt = null;
+          return;
+        }
+        const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+        if (isIos) {
+          alert("No iPhone/iPad: toca em Partilhar e depois em 'Adicionar ao Ecra Principal'.");
+        } else {
+          alert("Para instalar a app, abre o menu do navegador e escolhe 'Instalar aplicacao' ou 'Adicionar ao ecra inicial'.");
+        }
+      });
+    }
+
+    if (brentBtn) {
+      brentBtn.replaceWith(btn);
+    } else if (!existing) {
+      const headerTarget =
+        document.querySelector("header") ||
+        document.querySelector(".topbar, .navbar, .header") ||
+        document.body;
+      headerTarget.appendChild(btn);
+    }
+  });
 
     document.body.appendChild(btn);
   }
