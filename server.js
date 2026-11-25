@@ -1,5 +1,6 @@
 const __memCache = new Map();
 const __origFetch = global.fetch;
+
 const __stooqMap = {
   "BZ=F": "cb.f",
   "CL=F": "cl.f",
@@ -28,8 +29,7 @@ async function __fetchStooqHistory(sym) {
   const sq = __stooqMap[sym];
   if (!sq) return null;
   try {
-    const stooqUrl = `https://stooq.com/q/d/l/?s=${encodeURIComponent(sq)}&i=d`;
-    const r = await __origFetch(stooqUrl, {
+    const r = await __origFetch(`https://stooq.com/q/d/l/?s=${encodeURIComponent(sq)}&i=d`, {
       headers: { "User-Agent": "Mozilla/5.0" },
       signal: AbortSignal.timeout(4500)
     });
@@ -102,21 +102,10 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
-const url = require("url");
+const { URL } = require("url");
 
 const PORT = Number(process.env.PORT) || 3000;
-
-function resolveAssetPath(primaryName, fallbackName) {
-  const p1 = path.join(__dirname, primaryName);
-  if (fs.existsSync(p1)) return p1;
-  if (fallbackName) {
-    const p2 = path.join(__dirname, fallbackName);
-    if (fs.existsSync(p2)) return p2;
-  }
-  return p1;
-}
-
-const HISTORY_FILE = resolveAssetPath("history-data.json", "history-data_2.json");
+const HISTORY_FILE = path.join(__dirname, "history-data.json");
 const VALID_FUELS = new Set(["gasoleo", "gasoleo_esp", "gasolina95", "gasolina98", "gpl"]);
 
 const DGEG_FUEL_MAP = {
@@ -678,9 +667,50 @@ async function getFuelNews(cat, forceRefresh) {
   return payload;
 }
 
+async function fetchQuoteWithFallback(sym) {
+  const yHost = "https://query1.finance.yahoo.com";
+  const attempts = [
+    `${yHost}/v8/finance/chart/${encodeURIComponent(sym)}?range=1d&interval=5m`,
+    `${yHost}/v8/finance/chart/${encodeURIComponent(sym)}?range=5d&interval=1h`,
+    `${yHost}/v8/finance/chart/${encodeURIComponent(sym)}?range=1mo&interval=1d`
+  ];
+  for (const u of attempts) {
+    try {
+      const d = await fetchJson(u);
+      const r0 = d && d.chart && Array.isArray(d.chart.result) ? d.chart.result[0] : null;
+      const m = r0 && r0.meta;
+      const ts = (r0 && r0.timestamp) || [];
+      const q0 = (r0 && r0.indicators && Array.isArray(r0.indicators.quote)) ? r0.indicators.quote[0] : null;
+      const closes = (q0 && q0.close) || [];
+      const validCloses = closes.filter(v => v != null && isFinite(v));
+      const p = (m && isFinite(m.regularMarketPrice) && m.regularMarketPrice > 0)
+        ? Number(m.regularMarketPrice)
+        : (validCloses.length ? Number(validCloses[validCloses.length - 1]) : null);
+      const prev = (m && isFinite(m.chartPreviousClose) && m.chartPreviousClose > 0)
+        ? Number(m.chartPreviousClose)
+        : ((m && isFinite(m.previousClose) && m.previousClose > 0)
+            ? Number(m.previousClose)
+            : (validCloses.length > 1 ? Number(validCloses[0]) : null));
+      if (p && isFinite(p) && p > 0) {
+        const chg = (prev && prev > 0) ? (((p - prev) / prev) * 100) : 0;
+        const points = [];
+        for (let i = 0; i < ts.length; i++) {
+          const val = closes[i];
+          if (val != null && isFinite(val)) {
+            points.push({ t: ts[i] * 1000, v: +Number(val).toFixed(4) });
+          }
+        }
+        return { price: p, prevClose: prev, changePct: +chg.toFixed(2), points };
+      }
+    } catch (e) {}
+  }
+  return { price: null, prevClose: null, changePct: 0, points: [] };
+}
+
 const server = http.createServer(async (req, res) => {
   const _u = new URL(req.url, "http://localhost");
   const pathname = _u.pathname;
+  const query = _u.searchParams;
 
   if (pathname === "/api/commodities") {
     const list = [
@@ -693,23 +723,217 @@ const server = http.createServer(async (req, res) => {
       { name: "Trigo (USc/bushel)", sym: "ZW=F" },
       { name: "Café (USc/lb)", sym: "KC=F" }
     ];
-    const yHost = "https://query1.finance.yahoo.com";
     const results = await Promise.all(list.map(async item => {
-      try {
-        const u = `${yHost}/v8/finance/chart/${encodeURIComponent(item.sym)}?range=1d&interval=1d`;
-        const d = await fetchJson(u);
-        const r0 = d && d.chart && Array.isArray(d.chart.result) ? d.chart.result[0] : null;
-        const m = r0 && r0.meta;
-        const p = m && m.regularMarketPrice;
-        const prev = m && (m.chartPreviousClose || m.previousClose);
-        const chg = (p && prev) ? (((p - prev) / prev) * 100) : 0;
-        return Object.assign({}, item, { price: p || null, changePct: +chg.toFixed(2) });
-      } catch (e) {
-        return Object.assign({}, item, { price: null, changePct: 0 });
-      }
+      const q = await fetchQuoteWithFallback(item.sym);
+      return Object.assign({}, item, { price: q.price, changePct: q.changePct });
     }));
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     return res.end(JSON.stringify(results));
   }
 
-  if (pathname
+  if (pathname === "/api/chart") {
+    const sym = String(query.get("sym") || "BZ=F");
+    const rng = String(query.get("range") || "1d");
+    const intvMap = { "1d": "5m", "5d": "15m", "1mo": "1h", "3mo": "1d", "1y": "1d", "5y": "1wk", "max": "1mo" };
+    const interval = intvMap[rng] || "1d";
+    try {
+      const yHost = "https://query1.finance.yahoo.com";
+      const chartUrl = `${yHost}/v8/finance/chart/${encodeURIComponent(sym)}?range=${encodeURIComponent(rng)}&interval=${encodeURIComponent(interval)}`;
+      const data = await fetchJson(chartUrl);
+      const res0 = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
+      const ts = (res0 && res0.timestamp) || [];
+      const q0 = (res0 && res0.indicators && Array.isArray(res0.indicators.quote)) ? res0.indicators.quote[0] : null;
+      const closes = (q0 && q0.close) || [];
+      const meta = (res0 && res0.meta) || {};
+      const points = [];
+      for (let i = 0; i < ts.length; i++) {
+        const val = closes[i];
+        if (val != null && isFinite(val)) {
+          points.push({ t: ts[i] * 1000, v: +Number(val).toFixed(4) });
+        }
+      }
+      if (points.length > 0) {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        return res.end(JSON.stringify({
+          ok: true,
+          price: meta.regularMarketPrice || points[points.length - 1].v,
+          prevClose: meta.chartPreviousClose || meta.previousClose || null,
+          points
+        }));
+      }
+      const fb = await fetchQuoteWithFallback(sym);
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify({
+        ok: fb.points.length > 0,
+        price: fb.price,
+        prevClose: fb.prevClose,
+        points: fb.points
+      }));
+    } catch (e) {
+      const fb = await fetchQuoteWithFallback(sym);
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify({
+        ok: fb.points.length > 0,
+        price: fb.price,
+        prevClose: fb.prevClose,
+        points: fb.points
+      }));
+    }
+  }
+
+  if (pathname === "/api/indices") {
+    const list = [
+      { group: "eu", name: "PSI — Portugal", sym: "PSI20.LS" },
+      { group: "eu", name: "EURO STOXX 50", sym: "^STOXX50E" },
+      { group: "eu", name: "DAX 40 — Alemanha", sym: "^GDAXI" },
+      { group: "eu", name: "CAC 40 — França", sym: "^FCHI" },
+      { group: "eu", name: "IBEX 35 — Espanha", sym: "^IBEX" },
+      { group: "eu", name: "FTSE 100 — Reino Unido", sym: "^FTSE" },
+      { group: "world", name: "S&P 500 — EUA", sym: "^GSPC" },
+      { group: "world", name: "Nasdaq 100 — EUA", sym: "^IXIC" },
+      { group: "world", name: "Dow Jones 30 — EUA", sym: "^DJI" },
+      { group: "world", name: "Nikkei 225 — Japão", sym: "^N225" },
+      { group: "world", name: "Hang Seng — Hong Kong", sym: "^HSI" },
+      { group: "world", name: "Ibovespa — Brasil", sym: "^BVSP" }
+    ];
+    const results = await Promise.all(list.map(async item => {
+      const q = await fetchQuoteWithFallback(item.sym);
+      return Object.assign({}, item, { price: q.price, changePct: q.changePct });
+    }));
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(results));
+  }
+
+  if (pathname === "/api/news") {
+    const data = await getFuelNews(query.get("cat") || "pt", Boolean(query.get("force")));
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(data));
+  }
+
+  if (pathname === "/api/dgeg-average") {
+    const avgData = await getContinentalAveragePrice(query.get("tipo") || "gasoleo");
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(avgData));
+  }
+
+  if (pathname === "/api/market") {
+    const data = await getMarketData(Boolean(query.get("t") || query.get("force")));
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(data));
+  }
+
+  if (pathname === "/api/suggest") {
+    const list = await getSuggestions(query.get("q") || "");
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(list));
+  }
+
+  if (pathname === "/api/postos") {
+    const tipo = query.get("tipo") || "gasoleo";
+    const local = query.get("local") || "";
+    const latRaw = query.get("lat");
+    const lonRaw = query.get("lon");
+    const raioRaw = query.get("raio");
+    const data = await getPostosDgeg(
+      tipo,
+      local,
+      latRaw !== null && latRaw !== "" ? parseFloat(latRaw) : null,
+      lonRaw !== null && lonRaw !== "" ? parseFloat(lonRaw) : null,
+      raioRaw !== null && raioRaw !== "" ? parseFloat(raioRaw) : 15
+    );
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(data));
+  }
+
+  if (pathname === "/api/ranking") {
+    const data = await getRankingDgeg(
+      query.get("tipo") || "gasoleo",
+      query.get("distrito") || "",
+      query.get("concelho") || "",
+      query.get("scope") || "all"
+    );
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(data));
+  }
+
+  if (pathname === "/api/route") {
+    const dataRoute = await getRouteStations(
+      query.get("tipo") || "gasoleo",
+      query.get("origem") || "Quarteira",
+      query.get("destino") || "Lisboa"
+    );
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(dataRoute));
+  }
+
+  if (pathname === "/api/history") {
+    const hist = readHistory();
+    const key = VALID_FUELS.has(query.get("tipo")) ? query.get("tipo") : "gasoleo";
+
+    if (req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify(hist[key] || []));
+    }
+
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", chunk => {
+        body += chunk;
+        if (body.length > 10000) req.destroy();
+      });
+      req.on("end", () => {
+        try {
+          const parsed = JSON.parse(body);
+          const targetKey = VALID_FUELS.has(parsed.tipo) ? parsed.tipo : key;
+          const estNum = Number(parsed.estimated);
+          const pumpNum = Number(parsed.pump);
+          if (!isFinite(estNum) || !isFinite(pumpNum) || estNum <= 0 || pumpNum <= 0) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ ok: false, error: "Valores inválidos" }));
+          }
+          if (!hist[targetKey]) hist[targetKey] = [];
+          const today = new Date().toISOString().slice(0, 10);
+          const idx = hist[targetKey].findIndex(i => i.date === today);
+          const entry = { date: today, estimated: +estNum.toFixed(3), pump: +pumpNum.toFixed(3) };
+          if (idx >= 0) hist[targetKey][idx] = entry;
+          else hist[targetKey].push(entry);
+          writeHistory(hist);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false }));
+        }
+      });
+      return;
+    }
+  }
+
+  if (pathname === "/favicon.ico") {
+    res.writeHead(200, { "Content-Type": "image/svg+xml" });
+    return res.end(FAVICON_SVG);
+  }
+
+  const staticMap = {
+    "/": { file: "simulador-combustiveis-pt.html", type: "text/html; charset=utf-8" },
+    "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
+    "/app.js": { file: "app.js", type: "application/javascript; charset=utf-8" },
+    "/manifest.json": { file: "manifest.json", type: "application/manifest+json; charset=utf-8" },
+    "/sw.js": { file: "sw.js", type: "application/javascript; charset=utf-8" }
+  };
+
+  if (staticMap[pathname]) {
+    const filePath = path.join(__dirname, staticMap[pathname].file);
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { "Content-Type": staticMap[pathname].type });
+      return fs.createReadStream(filePath).pipe(res);
+    }
+  }
+
+  res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+  res.end("404");
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor Combustíveis PT Pro ativo em http://localhost:${PORT}`);
+});
