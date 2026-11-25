@@ -1623,132 +1623,8 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-// --- Auto-localizacao (GPS -> ultima localizacao guardada) ---
-(function initAutoLocationAndInstall() {
-  const LAST_LOC_KEY = "combustiveis_last_location";
-
-  function findLocationInput() {
-    return (
-      document.querySelector('input[placeholder*="Concelho"], input[placeholder*="Localidade"], input[id*="concelho"], input[id*="localidade"], input[name*="concelho"], input[name*="localidade"]') ||
-      Array.from(document.querySelectorAll('input[type="text"], input:not([type])')).find((el) => {
-        const labelText = (el.closest("div, label")?.innerText || "").toLowerCase();
-        return labelText.includes("concelho") || labelText.includes("localidade");
-      }) ||
-      null
-    );
-  }
-
-  function findSearchButton(inputEl) {
-    const scope = inputEl ? (inputEl.closest("form, div.row, div.controls, div") || document) : document;
-    return (
-      Array.from(scope.querySelectorAll("button")).find((b) => /pesquisar/i.test(b.textContent || "")) ||
-      Array.from(document.querySelectorAll("button")).find((b) => /pesquisar/i.test(b.textContent || "")) ||
-      null
-    );
-  }
-
-  function saveLastLocation(val) {
-    const clean = String(val || "").trim();
-    if (!clean) return;
-    try {
-      localStorage.setItem(LAST_LOC_KEY, JSON.stringify({ name: clean, savedAt: Date.now() }));
-    } catch (_) {}
-  }
-
-  function getLastLocation() {
-    try {
-      const raw = localStorage.getItem(LAST_LOC_KEY);
-      if (!raw) return "";
-      const parsed = JSON.parse(raw);
-      return typeof parsed === "string" ? parsed : (parsed?.name || "");
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function applyLocation(locName, shouldSearch = true) {
-    const clean = String(locName || "").trim();
-    const inputEl = findLocationInput();
-    if (!clean || !inputEl) return;
-    inputEl.value = clean;
-    inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-    inputEl.dispatchEvent(new Event("change", { bubbles: true }));
-    saveLastLocation(clean);
-
-    if (shouldSearch) {
-      const btn = findSearchButton(inputEl);
-      if (btn) setTimeout(() => btn.click(), 150);
-    }
-  }
-
-  async function reverseGeocode(lat, lon) {
-    try {
-      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=10&addressdetails=1`;
-      const res = await fetch(url, { headers: { "Accept": "application/json" } });
-      if (!res.ok) return "";
-      const data = await res.json();
-      const addr = data?.address || {};
-      return addr.city || addr.town || addr.village || addr.municipality || addr.county || "";
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function wireLocationPersistence() {
-    const inputEl = findLocationInput();
-    if (inputEl && !inputEl.dataset.locPersistBound) {
-      inputEl.dataset.locPersistBound = "1";
-      if (inputEl.value && inputEl.value.trim()) {
-        saveLastLocation(inputEl.value.trim());
-      }
-      inputEl.addEventListener("change", () => saveLastLocation(inputEl.value));
-    }
-    const btn = findSearchButton(inputEl);
-    if (btn && !btn.dataset.locSearchBound) {
-      btn.dataset.locSearchBound = "1";
-      btn.addEventListener("click", () => {
-        const cur = findLocationInput();
-        if (cur?.value?.trim()) saveLastLocation(cur.value.trim());
-      });
-    }
-  }
-
-  function runAutoLocation() {
-    wireLocationPersistence();
-    const saved = getLastLocation();
-    const inputEl = findLocationInput();
-    const initialValue = (inputEl?.value || "").trim() || saved;
-
-    if (!navigator.geolocation) {
-      if (saved) applyLocation(saved, false);
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude } = pos.coords || {};
-        if (typeof latitude === "number" && typeof longitude === "number") {
-          const place = await reverseGeocode(latitude, longitude);
-          if (place) {
-            applyLocation(place, true);
-            return;
-          }
-        }
-        if (saved) applyLocation(saved, false);
-      },
-      () => {
-        // Sem localizacao ligada ou permissao negada -> usa ultima localizacao guardada
-        if (saved && (!inputEl || inputEl.value.trim() !== saved)) {
-          applyLocation(saved, false);
-        } else if (initialValue) {
-          saveLastLocation(initialValue);
-        }
-      },
-      { enableHighAccuracy: false, timeout: 5000, maximumAge: 300000 }
-    );
-  }
-
-  // --- Botao "Baixar App" (PWA) no lugar de "Atualizar Brent" ---
+// --- Botao "Baixar App" (PWA) no lugar de "Atualizar Brent" ---
+(function initBaixarAppButton() {
   let deferredPrompt = null;
 
   window.addEventListener("beforeinstallprompt", (e) => {
@@ -1819,18 +1695,17 @@ if ("serviceWorker" in navigator) {
         document.body;
       headerTarget.appendChild(btn);
     }
-  });
+  }
 
-    document.body.appendChild(btn);
+  function scheduleInstallButton() {
+    ensureInstallButton();
+    setTimeout(ensureInstallButton, 500);
+    setTimeout(ensureInstallButton, 1500);
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-      ensureInstallButton();
-      setTimeout(runAutoLocation, 400);
-    });
+    document.addEventListener("DOMContentLoaded", scheduleInstallButton);
   } else {
-    ensureInstallButton();
-    setTimeout(runAutoLocation, 400);
+    scheduleInstallButton();
   }
 })();
