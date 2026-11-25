@@ -951,7 +951,27 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify(results));
   }
 
-    if (pathname === "/sw.js") {
+      if (pathname === "/robots.txt") {
+    const fs = require("fs");
+    const path = require("path");
+    const filePath = path.join(__dirname, "robots.txt");
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end(fs.readFileSync(filePath, "utf8"));
+    }
+  }
+
+  if (pathname === "/sitemap.xml") {
+    const fs = require("fs");
+    const path = require("path");
+    const filePath = path.join(__dirname, "sitemap.xml");
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
+      return res.end(fs.readFileSync(filePath, "utf8"));
+    }
+  }
+
+  if (pathname === "/sw.js") {
     const fs = require("fs");
     const path = require("path");
     const filePath = path.join(__dirname, "sw.js");
@@ -960,6 +980,26 @@ const server = http.createServer(async (req, res) => {
         "Content-Type": "application/javascript; charset=utf-8",
         "Cache-Control": "no-cache, no-store, must-revalidate"
       });
+      return res.end(fs.readFileSync(filePath, "utf8"));
+    }
+  }
+
+    if (pathname === "/robots.txt") {
+    const fs = require("fs");
+    const path = require("path");
+    const filePath = path.join(__dirname, "robots.txt");
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end(fs.readFileSync(filePath, "utf8"));
+    }
+  }
+
+  if (pathname === "/sitemap.xml") {
+    const fs = require("fs");
+    const path = require("path");
+    const filePath = path.join(__dirname, "sitemap.xml");
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
       return res.end(fs.readFileSync(filePath, "utf8"));
     }
   }
