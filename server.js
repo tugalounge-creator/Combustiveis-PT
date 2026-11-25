@@ -1,5 +1,7 @@
-const realChartCache = new Map();
-const REAL_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
+const marketSeriesCache = new Map();
+const inFlightSeries = new Map();
+const SERIES_TTL_MS = 30 * 1000;
+const STALE_TTL_MS = 4 * 60 * 60 * 1000;
 
 function toStooqSymbol(sym) {
   const map = {
@@ -12,21 +14,23 @@ function toStooqSymbol(sym) {
     "ZW=F": "zw.f",
     "KC=F": "kc.f",
     "EURUSD=X": "eurusd",
+    "PSI20.LS": "^psi20",
+    "^STOXX50E": "^sx5e",
     "^GSPC": "^spx",
     "^IXIC": "^ndq",
     "^DJI": "^dji",
     "^FTSE": "^ukx",
     "^GDAXI": "^dax",
     "^FCHI": "^cac",
-    "^IBEX": "^ibx",
+    "^IBEX": "^ibex",
     "^N225": "^nkx",
     "^HSI": "^hsi",
     "^BVSP": "^bvsp"
   };
-  return map[sym] || sym.toLowerCase();
+  return map[sym] || String(sym || "").toLowerCase();
 }
 
-async function fetchWithTimeout(url, timeoutMs = 6500) {
+async function fetchJsonWithTimeout(url, timeoutMs = 6500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -37,97 +41,29 @@ async function fetchWithTimeout(url, timeoutMs = 6500) {
         "Accept": "application/json,text/csv,*/*"
       }
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res;
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchYahooChartDirect(sym, rng = "1d", timeoutMs = 6500) {
-  const interval = rng === "1d" ? "15m" : rng === "5d" ? "60m" : "1d";
-  const hosts = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"];
-
-  for (const host of hosts) {
-    try {
-      const url = `${host}/v8/finance/chart/${encodeURIComponent(sym)}?range=${encodeURIComponent(rng)}&interval=${interval}&includePrePost=false`;
-      const res = await fetchWithTimeout(url, timeoutMs);
-      const json = await res.json();
-      const result = json?.chart?.result?.[0];
-      const ts = result?.timestamp || [];
-      const closes = result?.indicators?.quote?.[0]?.close || [];
-      const points = [];
-
-      for (let i = 0; i < ts.length; i++) {
-        const v = closes[i];
-        if (typeof v === "number" && Number.isFinite(v) && v > 0) {
-          points.push({ t: ts[i] * 1000, v: +v.toFixed(4) });
-        }
-      }
-
-      if (points.length >= 2) {
-        const meta = result.meta || {};
-        const price = +(meta.regularMarketPrice ?? points[points.length - 1].v).toFixed(4);
-        const prevClose = +(meta.chartPreviousClose ?? meta.previousClose ?? points[0].v).toFixed(4);
-        const changePct = prevClose > 0 ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : 0;
-        return { ok: true, price, prevClose, changePct, points };
-      }
-    } catch (_) {}
-  }
-  return null;
-}
-
-async function fetchStooqChart(sym, timeoutMs = 6500) {
+async function fetchTextWithTimeout(url, timeoutMs = 6500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const stooqSym = encodeURIComponent(toStooqSymbol(sym));
-    const url = `https://stooq.com/q/d/l/?s=${stooqSym}&i=d`;
-    const res = await fetchWithTimeout(url, timeoutMs);
-    const csv = await res.text();
-    const lines = csv.trim().split(/\r?\n/).slice(1);
-    const points = [];
-
-    for (const line of lines.slice(-30)) {
-      const parts = line.split(",");
-      if (parts.length < 5) continue;
-      const t = Date.parse(parts[0]);
-      const close = Number(parts[4]);
-      if (!Number.isNaN(t) && Number.isFinite(close) && close > 0) {
-        points.push({ t, v: +close.toFixed(4) });
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/csv,text/plain,*/*"
       }
-    }
-
-    if (points.length >= 2) {
-      const price = points[points.length - 1].v;
-      const prevClose = points[points.length - 2].v;
-      const changePct = prevClose > 0 ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : 0;
-      return { ok: true, price, prevClose, changePct, points };
-    }
-  } catch (_) {}
-  return null;
-}
-
-async function resolveRealOrCachedChart(sym, rng) {
-  const key = `${sym}|${rng}`;
-  const yahooData = await fetchYahooChartDirect(sym, rng, 6500);
-  if (yahooData && yahooData.points.length >= 2) {
-    realChartCache.set(key, { savedAt: Date.now(), data: yahooData });
-    return yahooData;
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
   }
-
-  const stooqData = await fetchStooqChart(sym, 6500);
-  if (stooqData && stooqData.points.length >= 2) {
-    realChartCache.set(key, { savedAt: Date.now(), data: stooqData });
-    return stooqData;
-  }
-
-  const cached = realChartCache.get(key);
-  if (cached && (Date.now() - cached.savedAt) < REAL_CACHE_TTL_MS && cached.data?.points?.length >= 2) {
-    return cached.data;
-  }
-
-  return typeof buildSafeFallbackChart === "function"
-    ? buildSafeFallbackChart(sym, rng)
-    : { ok: true, price: 100, prevClose: 100, changePct: 0, points: [{ t: Date.now() - 900000, v: 100 }, { t: Date.now(), v: 100 }] };
 }
 
 function buildSafeFallbackChart(sym, rng) {
@@ -135,9 +71,9 @@ function buildSafeFallbackChart(sym, rng) {
   const stepMs = rng === "1d" ? 15 * 60 * 1000 : 24 * 60 * 60 * 1000;
   const count = rng === "1d" ? 32 : 20;
   const presets = {
-    "BZ=F": { price: 90.31, prev: 90.65, amp: 0.65 },
+    "BZ=F": { price: 90.82, prev: 90.65, amp: 0.65 },
     "CL=F": { price: 85.80, prev: 86.10, amp: 0.60 },
-    "EURUSD=X": { price: 1.0942, prev: 1.0920, amp: 0.004 },
+    "EURUSD=X": { price: 1.0978, prev: 1.0950, amp: 0.004 },
     "PSI20.LS": { price: 9294.33, prev: 9315.00, amp: 45 },
     "^STOXX50E": { price: 5990.12, prev: 6004.00, amp: 25 },
     "^GDAXI": { price: 24964.20, prev: 25016.00, amp: 90 },
@@ -172,152 +108,112 @@ function buildSafeFallbackChart(sym, rng) {
     points.push({ t: now - (count - 1 - i) * stepMs, v: +Number(cur).toFixed(4) });
   }
   const changePct = cfg.prev > 0 ? +(((cfg.price - cfg.prev) / cfg.prev) * 100).toFixed(2) : 0;
-  return { ok: true, price: cfg.price, prevClose: cfg.prev, changePct, points };
+  return { ok: true, price: cfg.price, prevClose: cfg.prev, changePct, source: "Reserva", points };
 }
 
-const __memCache = new Map(); // key -> { txt, ts }
-const __inFlight = new Map(); // key -> Promise<string>
-const __origFetch = global.fetch;
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos de cache
+async function fetchYahooSeries(sym, rng) {
+  const intervalMap = { "1d": "5m", "5d": "15m", "1mo": "1h", "3mo": "1d", "1y": "1d", "5y": "1wk", "max": "1mo" };
+  const interval = intervalMap[rng] || "1d";
+  const hosts = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"];
 
-let __queue = Promise.resolve();
-function __enqueueFetch(fn) {
-  const next = __queue.then(fn, fn);
-  __queue = next.then(() => new Promise(r => setTimeout(r, 250))); // 250ms entre chamadas externas
-  return next;
+  for (const host of hosts) {
+    try {
+      const url = ${host}/v8/finance/chart/?range=&interval=&includePrePost=false;
+      const json = await fetchJsonWithTimeout(url, 6500);
+      const result = json && json.chart && json.chart.result ? json.chart.result[0] : null;
+      const ts = (result && result.timestamp) || [];
+      const closes = (result && result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) || [];
+      const points = [];
+
+      for (let i = 0; i < ts.length; i++) {
+        const v = closes[i];
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+          points.push({ t: ts[i] * 1000, v: +v.toFixed(4) });
+        }
+      }
+
+      if (points.length >= 2) {
+        const meta = (result && result.meta) || {};
+        const price = +(meta.regularMarketPrice ?? points[points.length - 1].v).toFixed(4);
+        const prevClose = +(meta.chartPreviousClose ?? meta.previousClose ?? points[0].v).toFixed(4);
+        const changePct = prevClose > 0 ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : 0;
+        return { ok: true, price, prevClose, changePct, source: "Yahoo", points };
+      }
+    } catch (_) {}
+  }
+  return null;
 }
 
-const __stooqMap = {
-  "BZ=F": "cb.f",
-  "CL=F": "cl.f",
-  "EURUSD=X": "eurusd",
-  "PSI20.LS": "^psi20",
-  "^STOXX50E": "^sx5e",
-  "^GDAXI": "^dax",
-  "^IBEX": "^ibex",
-  "^FCHI": "^cac",
-  "^FTSE": "^ukx",
-  "^GSPC": "^spx",
-  "^IXIC": "^ndq",
-  "^DJI": "^dji",
-  "^N225": "^nkx",
-  "^HSI": "^hsi",
-  "^BVSP": "^bvsp",
-  "GC=F": "xauusd",
-  "SI=F": "xagusd",
-  "NG=F": "ng.f",
-  "HG=F": "hg.f",
-  "ZW=F": "zw.f",
-  "KC=F": "kc.f"
-};
-
-async function __fetchStooqHistory(sym) {
-  const sq = __stooqMap[sym];
-  if (!sq) return null;
+async function fetchStooqSeries(sym) {
   try {
-    const r = await __origFetch(`https://stooq.com/q/d/l/?s=${encodeURIComponent(sq)}&i=d`, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36" },
-      signal: AbortSignal.timeout(9000)
-    });
-    if (!r.ok) return null;
-    const raw = await r.text();
-    if (!raw || raw.includes("Exceeded the daily hits limit")) return null;
-    const lines = raw.trim().split(/\r?\n/).slice(1).filter(Boolean).slice(-120);
-    const ts = [];
-    const cl = [];
-    for (const ln of lines) {
-      const c = ln.split(",");
-      const t = Math.floor(new Date((c[0] || "") + "T16:00:00Z").getTime() / 1000);
-      const v = parseFloat(c[4]);
-      if (!isNaN(t) && !isNaN(v) && v > 0) {
-        ts.push(t);
-        cl.push(v);
+    const stooqSym = encodeURIComponent(toStooqSymbol(sym));
+    const url = https://stooq.com/q/d/l/?s=&i=d;
+    const csv = await fetchTextWithTimeout(url, 6500);
+    if (!csv || csv.includes("Exceeded the daily hits limit")) return null;
+
+    const lines = csv.trim().split(/\r?\n/).slice(1).filter(Boolean).slice(-60);
+    const points = [];
+    for (const line of lines) {
+      const parts = line.split(",");
+      if (parts.length < 5) continue;
+      const t = Date.parse(parts[0]);
+      const close = Number(parts[4]);
+      if (!Number.isNaN(t) && Number.isFinite(close) && close > 0) {
+        points.push({ t, v: +close.toFixed(4) });
       }
     }
-    if (cl.length < 2) return null;
-    return JSON.stringify({
-      chart: {
-        result: [{
-          meta: {
-            regularMarketPrice: cl[cl.length - 1],
-            chartPreviousClose: cl[cl.length - 2],
-            previousClose: cl[cl.length - 2]
-          },
-          timestamp: ts,
-          indicators: { quote: [{ close: cl }] }
-        }]
-      }
-    });
-  } catch (e) {
-    return null;
-  }
-}
 
-async function __fetchChartWithFallback(u, opts, key, sym) {
-  const headers = Object.assign({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36",
-    "Accept": "application/json,*/*"
-  }, (opts && opts.headers) || {});
-
-  // 1. Tenta Yahoo Finance (com timeout de 8s)
-  try {
-    const res = await __origFetch(u, Object.assign({}, opts || {}, {
-      headers,
-      signal: AbortSignal.timeout(8000)
-    }));
-    if (res.ok) {
-      const txt = await res.text();
-      if (txt && txt.includes("timestamp") && txt.includes("close") && !txt.includes('"result":[]')) {
-        __memCache.set(key, { txt, ts: Date.now() });
-        return txt;
-      }
+    if (points.length >= 2) {
+      const price = points[points.length - 1].v;
+      const prevClose = points[points.length - 2].v;
+      const changePct = prevClose > 0 ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : 0;
+      return { ok: true, price, prevClose, changePct, source: "Stooq", points };
     }
-  } catch (e) {}
-
-  // 2. Fallback para Stooq
-  const stooq = await __fetchStooqHistory(sym);
-  if (stooq) {
-    __memCache.set(key, { txt: stooq, ts: Date.now() });
-    return stooq;
-  }
-
-  // 3. Se ambos falharem, devolve cache antiga (mesmo expirada) se existir
-  if (__memCache.has(key)) {
-    return __memCache.get(key).txt;
-  }
-
-  return '{"chart":{"result":[]}}';
+  } catch (_) {}
+  return null;
 }
 
-global.fetch = async function(urlInput, opts) {
-  const u = String(urlInput || "");
-  if (!u.includes("yahoo.com")) return __origFetch(urlInput, opts);
+async function getSeriesData(sym, rng = "1d", forceRefresh = false) {
+  const safeSym = String(sym || "BZ=F");
+  const safeRng = String(rng || "1d");
+  const key = ${safeSym}|;
+  const now = Date.now();
 
-  const key = u.replace(/([?&])_=[^&]+(&|$)/, "$1").replace(/[?&]$/, "");
-  const m = u.match(/\/chart\/([^?]+)/);
-  const sym = (m && m[1]) ? decodeURIComponent(m[1]) : "";
-
-  // Devolve imediatamente se existir na cache válida (< 5 min)
-  const cached = __memCache.get(key);
-  if (cached && (Date.now() - cached.ts) < CACHE_TTL_MS) {
-    return new Response(cached.txt, { status: 200, headers: { "Content-Type": "application/json" } });
+  const cached = marketSeriesCache.get(key);
+  if (!forceRefresh && cached && (now - cached.savedAt) < SERIES_TTL_MS) {
+    return cached.data;
   }
 
-  // Se já existe um pedido igual em curso, aguarda pelo mesmo resultado
-  if (__inFlight.has(key)) {
-    const txt = await __inFlight.get(key);
-    return new Response(txt, { status: 200, headers: { "Content-Type": "application/json" } });
+  if (inFlightSeries.has(key)) {
+    return inFlightSeries.get(key);
   }
 
-  const job = __enqueueFetch(() => __fetchChartWithFallback(u, opts, key, sym))
-    .finally(() => __inFlight.delete(key));
+  const job = (async () => {
+    const yahoo = await fetchYahooSeries(safeSym, safeRng);
+    if (yahoo) {
+      marketSeriesCache.set(key, { savedAt: Date.now(), data: yahoo });
+      return yahoo;
+    }
 
-  __inFlight.set(key, job);
-  const finalTxt = await job;
-  return new Response(finalTxt, { status: 200, headers: { "Content-Type": "application/json" } });
-};
+    const stooq = await fetchStooqSeries(safeSym);
+    if (stooq) {
+      marketSeriesCache.set(key, { savedAt: Date.now(), data: stooq });
+      return stooq;
+    }
 
+    const fallbackCached = marketSeriesCache.get(key);
+    if (fallbackCached && (Date.now() - fallbackCached.savedAt) < STALE_TTL_MS) {
+      return fallbackCached.data;
+    }
 
+    return buildSafeFallbackChart(safeSym, safeRng);
+  })().finally(() => {
+    inFlightSeries.delete(key);
+  });
+
+  inFlightSeries.set(key, job);
+  return job;
+}
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
@@ -995,53 +891,17 @@ const server = http.createServer(async (req, res) => {
   if (pathname === "/api/chart") {
     const sym = String(query.get("sym") || "BZ=F");
     const rng = String(query.get("range") || "1d");
-    const intvMap = { "1d": "5m", "5d": "15m", "1mo": "1h", "3mo": "1d", "1y": "1d", "5y": "1wk", "max": "1mo" };
-    const interval = intvMap[rng] || "1d";
-    try {
-      const yHost = "https://query1.finance.yahoo.com";
-      const chartUrl = `${yHost}/v8/finance/chart/${encodeURIComponent(sym)}?range=${encodeURIComponent(rng)}&interval=${encodeURIComponent(interval)}`;
-      const data = await fetchJson(chartUrl);
-      const res0 = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
-      const ts = (res0 && res0.timestamp) || [];
-      const q0 = (res0 && res0.indicators && Array.isArray(res0.indicators.quote)) ? res0.indicators.quote[0] : null;
-      const closes = (q0 && q0.close) || [];
-      const meta = (res0 && res0.meta) || {};
-      const points = [];
-      for (let i = 0; i < ts.length; i++) {
-        const val = closes[i];
-        if (val != null && isFinite(val)) {
-          points.push({ t: ts[i] * 1000, v: +Number(val).toFixed(4) });
-        }
-      }
-      if (points.length > 0) {
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        return res.end(JSON.stringify({
-          ok: true,
-          price: meta.regularMarketPrice || points[points.length - 1].v,
-          prevClose: meta.chartPreviousClose || meta.previousClose || null,
-          points
-        }));
-      }
-            const resolvedChart = await resolveRealOrCachedChart(sym, rng);
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({
-        ok: true,
-        price: resolvedChart.price,
-        prevClose: resolvedChart.prevClose,
-        changePct: resolvedChart.changePct,
-        points: resolvedChart.points
-      }));
-    } catch (e) {
-            const resolvedChart = await resolveRealOrCachedChart(sym, rng);
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({
-        ok: true,
-        price: resolvedChart.price,
-        prevClose: resolvedChart.prevClose,
-        changePct: resolvedChart.changePct,
-        points: resolvedChart.points
-      }));
-    }
+    const force = Boolean(query.get("force") || query.get("_t"));
+    const series = await getSeriesData(sym, rng, force);
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify({
+      ok: true,
+      price: series.price,
+      prevClose: series.prevClose,
+      changePct: series.changePct,
+      source: series.source,
+      points: series.points
+    }));
   }
 
   if (pathname === "/api/indices") {
