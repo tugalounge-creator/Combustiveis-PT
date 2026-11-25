@@ -1709,3 +1709,58 @@ if ("serviceWorker" in navigator) {
     scheduleInstallButton();
   }
 })();
+
+// --- Reordenar botoes de navegacao (Indices & Simulador Fiscal em 4.o) ---
+(function initReorderNavButtons() {
+  const DESIRED_ORDER = [
+    { match: /mapa\s*&\s*postos/i, label: "1. Mapa & Postos" },
+    { match: /viagens\s*&\s*rota/i, label: "2. Viagens & Rota" },
+    { match: /ranking\s*pt/i, label: "3. Ranking PT" },
+    { match: /indices\s*&\s*simulador\s*fiscal|índices\s*&\s*simulador\s*fiscal/i, label: "4. Índices & Simulador Fiscal" }
+  ];
+
+  function updateButtonText(el, newLabel) {
+    const textNode = Array.from(el.childNodes).find(
+      (n) => n.nodeType === Node.TEXT_NODE && n.textContent && n.textContent.trim().length > 0
+    );
+    if (textNode) {
+      const leading = (textNode.textContent.match(/^\s*/) || [""])[0];
+      const trailing = (textNode.textContent.match(/\s*$/) || [""])[0];
+      textNode.textContent = leading + newLabel + trailing;
+    } else {
+      el.textContent = newLabel;
+    }
+  }
+
+  function reorderNavButtons() {
+    const candidates = Array.from(document.querySelectorAll("button, a, [role='tab']"));
+    const found = DESIRED_ORDER.map((item) => ({
+      cfg: item,
+      el: candidates.find((el) => item.match.test((el.textContent || "").replace(/\s+/g, " ").trim())) || null
+    }));
+
+    const matched = found.filter((x) => x.el !== null);
+    if (matched.length < 3) return;
+
+    const parent = matched[0].el.parentElement;
+    if (!parent) return;
+
+    const sameParent = found.filter((x) => x.el && x.el.parentElement === parent);
+    sameParent.forEach(({ cfg, el }) => {
+      updateButtonText(el, cfg.label);
+      parent.appendChild(el);
+    });
+  }
+
+  function scheduleReorder() {
+    reorderNavButtons();
+    setTimeout(reorderNavButtons, 300);
+    setTimeout(reorderNavButtons, 1200);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", scheduleReorder);
+  } else {
+    scheduleReorder();
+  }
+})();
