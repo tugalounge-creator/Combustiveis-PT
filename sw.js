@@ -1,4 +1,4 @@
-const CACHE_NAME = "combustiveis-pt-v174";
+const CACHE_NAME = "combustiveis-pt-v175";
 const STATIC_ASSETS = [
   "/",
   "/manifest.json"
