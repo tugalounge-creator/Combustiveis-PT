@@ -1605,3 +1605,18 @@ function renderFuelNews(forceFetch) {
 
   setInterval(refreshAllEvery2Min, 120000);
 })();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", async () => {
+    try {
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      reg.update();
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    } catch (_) {}
+  });
+}

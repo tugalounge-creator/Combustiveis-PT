@@ -951,6 +951,19 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify(results));
   }
 
+    if (pathname === "/sw.js") {
+    const fs = require("fs");
+    const path = require("path");
+    const filePath = path.join(__dirname, "sw.js");
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-cache, no-store, must-revalidate"
+      });
+      return res.end(fs.readFileSync(filePath, "utf8"));
+    }
+  }
+
   if (pathname === "/api/chart") {
     const sym = String(query.get("sym") || "BZ=F");
     const rng = String(query.get("range") || "1d");
