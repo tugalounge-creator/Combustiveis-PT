@@ -1,5 +1,14 @@
-const __memCache = new Map();
+const __memCache = new Map(); // key -> { txt, ts }
+const __inFlight = new Map(); // key -> Promise<string>
 const __origFetch = global.fetch;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos de cache
+
+let __queue = Promise.resolve();
+function __enqueueFetch(fn) {
+  const next = __queue.then(fn, fn);
+  __queue = next.then(() => new Promise(r => setTimeout(r, 250))); // 250ms entre chamadas externas
+  return next;
+}
 
 const __stooqMap = {
   "BZ=F": "cb.f",
@@ -30,11 +39,13 @@ async function __fetchStooqHistory(sym) {
   if (!sq) return null;
   try {
     const r = await __origFetch(`https://stooq.com/q/d/l/?s=${encodeURIComponent(sq)}&i=d`, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(4500)
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36" },
+      signal: AbortSignal.timeout(9000)
     });
     if (!r.ok) return null;
-    const lines = (await r.text()).trim().split(/\r?\n/).slice(1).filter(Boolean).slice(-120);
+    const raw = await r.text();
+    if (!raw || raw.includes("Exceeded the daily hits limit")) return null;
+    const lines = raw.trim().split(/\r?\n/).slice(1).filter(Boolean).slice(-120);
     const ts = [];
     const cl = [];
     for (const ln of lines) {
@@ -65,38 +76,70 @@ async function __fetchStooqHistory(sym) {
   }
 }
 
-global.fetch = async function(urlInput, opts) {
-  const u = String(urlInput || "");
-  if (!u.includes("yahoo.com")) return __origFetch(urlInput, opts);
-  const key = u.replace(/([?&])_=[^&]+(&|$)/, "$1").replace(/[?&]$/, "");
+async function __fetchChartWithFallback(u, opts, key, sym) {
   const headers = Object.assign({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "application/json,*/*"
   }, (opts && opts.headers) || {});
+
+  // 1. Tenta Yahoo Finance (com timeout de 8s)
   try {
     const res = await __origFetch(u, Object.assign({}, opts || {}, {
       headers,
-      signal: AbortSignal.timeout(4000)
+      signal: AbortSignal.timeout(8000)
     }));
     if (res.ok) {
       const txt = await res.text();
-      if (txt && txt.includes("timestamp") && txt.includes("close")) {
-        __memCache.set(key, txt);
-        return new Response(txt, { status: 200, headers: { "Content-Type": "application/json" } });
+      if (txt && txt.includes("timestamp") && txt.includes("close") && !txt.includes('"result":[]')) {
+        __memCache.set(key, { txt, ts: Date.now() });
+        return txt;
       }
     }
   } catch (e) {}
-  const m = u.match(/\/chart\/([^?]+)/);
-  const stooq = await __fetchStooqHistory((m && m[1]) ? decodeURIComponent(m[1]) : "");
+
+  // 2. Fallback para Stooq
+  const stooq = await __fetchStooqHistory(sym);
   if (stooq) {
-    __memCache.set(key, stooq);
-    return new Response(stooq, { status: 200, headers: { "Content-Type": "application/json" } });
+    __memCache.set(key, { txt: stooq, ts: Date.now() });
+    return stooq;
   }
+
+  // 3. Se ambos falharem, devolve cache antiga (mesmo expirada) se existir
   if (__memCache.has(key)) {
-    return new Response(__memCache.get(key), { status: 200, headers: { "Content-Type": "application/json" } });
+    return __memCache.get(key).txt;
   }
-  return new Response('{"chart":{"result":[]}}', { status: 200, headers: { "Content-Type": "application/json" } });
+
+  return '{"chart":{"result":[]}}';
+}
+
+global.fetch = async function(urlInput, opts) {
+  const u = String(urlInput || "");
+  if (!u.includes("yahoo.com")) return __origFetch(urlInput, opts);
+
+  const key = u.replace(/([?&])_=[^&]+(&|$)/, "$1").replace(/[?&]$/, "");
+  const m = u.match(/\/chart\/([^?]+)/);
+  const sym = (m && m[1]) ? decodeURIComponent(m[1]) : "";
+
+  // Devolve imediatamente se existir na cache válida (< 5 min)
+  const cached = __memCache.get(key);
+  if (cached && (Date.now() - cached.ts) < CACHE_TTL_MS) {
+    return new Response(cached.txt, { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  // Se já existe um pedido igual em curso, aguarda pelo mesmo resultado
+  if (__inFlight.has(key)) {
+    const txt = await __inFlight.get(key);
+    return new Response(txt, { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  const job = __enqueueFetch(() => __fetchChartWithFallback(u, opts, key, sym))
+    .finally(() => __inFlight.delete(key));
+
+  __inFlight.set(key, job);
+  const finalTxt = await job;
+  return new Response(finalTxt, { status: 200, headers: { "Content-Type": "application/json" } });
 };
+
 
 const http = require("http");
 const https = require("https");
