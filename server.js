@@ -27,11 +27,17 @@ function buildSafeFallbackChart(sym, rng) {
   };
   const cfg = presets[sym] || { price: 100, prev: 99.5, amp: 1.5 };
   const points = [];
+  let cur = cfg.prev;
+  const stepSpan = (cfg.price - cfg.prev) / count;
   for (let i = 0; i < count; i++) {
-    const ratio = (i + 1) / count;
-    const wave = Math.sin(i * 0.65) * cfg.amp * (1 - ratio * 0.4);
-    const val = i === count - 1 ? cfg.price : +(cfg.prev + (cfg.price - cfg.prev) * ratio + wave).toFixed(4);
-    points.push({ t: now - (count - 1 - i) * stepMs, v: val });
+    if (i === count - 1) {
+      cur = cfg.price;
+    } else {
+      const jitter = ((Math.sin(i * 12.9898 + count) * 43758.5453) % 1);
+      const centered = (jitter - Math.trunc(jitter)) * 2 - 1;
+      cur = cur + stepSpan + centered * (cfg.amp * 0.14);
+    }
+    points.push({ t: now - (count - 1 - i) * stepMs, v: +Number(cur).toFixed(4) });
   }
   const changePct = cfg.prev > 0 ? +(((cfg.price - cfg.prev) / cfg.prev) * 100).toFixed(2) : 0;
   return { ok: true, price: cfg.price, prevClose: cfg.prev, changePct, points };
