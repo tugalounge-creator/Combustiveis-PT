@@ -1574,3 +1574,34 @@ function renderFuelNews(forceFetch) {
       box.innerHTML = "<p class='status-msg'>Erro de ligação ao carregar as notícias.</p>";
     });
 }
+
+// === AUTO_REFRESH_2MIN ===
+(function() {
+  var origFetch = window.fetch;
+  window.fetch = function(url, opts) {
+    if (typeof url === "string" && url.indexOf("/api/") === 0) {
+      url += (url.indexOf("?") >= 0 ? "&" : "?") + "_t=" + Date.now();
+      opts = Object.assign({ cache: "no-store" }, opts || {});
+    }
+    return origFetch.call(this, url, opts);
+  };
+
+  function refreshAllEvery2Min() {
+    var nowStr = new Date().toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    document.querySelectorAll("header span, header small, #last-updated, #header-updated").forEach(function(el) {
+      if (el.textContent && el.textContent.indexOf("Atualizado") >= 0) {
+        el.textContent = "Atualizado Ã s " + nowStr;
+      }
+    });
+    if (typeof cachedIndices !== "undefined") cachedIndices = null;
+    if (typeof cachedComms !== "undefined") cachedComms = null;
+    if (typeof fetchLiveBrentAndFx === "function") fetchLiveBrentAndFx();
+    if (typeof renderBrentLiveTicker === "function") renderBrentLiveTicker();
+    if (typeof renderMarketsWidget === "function") renderMarketsWidget(true);
+    if (typeof renderCommoditiesWidget === "function") renderCommoditiesWidget(true);
+    if (typeof renderNewsWidget === "function") renderNewsWidget(true);
+    if (typeof renderDgegWeeklyChart === "function") renderDgegWeeklyChart();
+  }
+
+  setInterval(refreshAllEvery2Min, 120000);
+})();
