@@ -1,3 +1,135 @@
+const realChartCache = new Map();
+const REAL_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
+
+function toStooqSymbol(sym) {
+  const map = {
+    "BZ=F": "cb.f",
+    "CL=F": "cl.f",
+    "GC=F": "gc.f",
+    "SI=F": "si.f",
+    "NG=F": "ng.f",
+    "HG=F": "hg.f",
+    "ZW=F": "zw.f",
+    "KC=F": "kc.f",
+    "EURUSD=X": "eurusd",
+    "^GSPC": "^spx",
+    "^IXIC": "^ndq",
+    "^DJI": "^dji",
+    "^FTSE": "^ukx",
+    "^GDAXI": "^dax",
+    "^FCHI": "^cac",
+    "^IBEX": "^ibx",
+    "^N225": "^nkx",
+    "^HSI": "^hsi",
+    "^BVSP": "^bvsp"
+  };
+  return map[sym] || sym.toLowerCase();
+}
+
+async function fetchWithTimeout(url, timeoutMs = 6500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json,text/csv,*/*"
+      }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchYahooChartDirect(sym, rng = "1d", timeoutMs = 6500) {
+  const interval = rng === "1d" ? "15m" : rng === "5d" ? "60m" : "1d";
+  const hosts = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"];
+
+  for (const host of hosts) {
+    try {
+      const url = `${host}/v8/finance/chart/${encodeURIComponent(sym)}?range=${encodeURIComponent(rng)}&interval=${interval}&includePrePost=false`;
+      const res = await fetchWithTimeout(url, timeoutMs);
+      const json = await res.json();
+      const result = json?.chart?.result?.[0];
+      const ts = result?.timestamp || [];
+      const closes = result?.indicators?.quote?.[0]?.close || [];
+      const points = [];
+
+      for (let i = 0; i < ts.length; i++) {
+        const v = closes[i];
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+          points.push({ t: ts[i] * 1000, v: +v.toFixed(4) });
+        }
+      }
+
+      if (points.length >= 2) {
+        const meta = result.meta || {};
+        const price = +(meta.regularMarketPrice ?? points[points.length - 1].v).toFixed(4);
+        const prevClose = +(meta.chartPreviousClose ?? meta.previousClose ?? points[0].v).toFixed(4);
+        const changePct = prevClose > 0 ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : 0;
+        return { ok: true, price, prevClose, changePct, points };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function fetchStooqChart(sym, timeoutMs = 6500) {
+  try {
+    const stooqSym = encodeURIComponent(toStooqSymbol(sym));
+    const url = `https://stooq.com/q/d/l/?s=${stooqSym}&i=d`;
+    const res = await fetchWithTimeout(url, timeoutMs);
+    const csv = await res.text();
+    const lines = csv.trim().split(/\r?\n/).slice(1);
+    const points = [];
+
+    for (const line of lines.slice(-30)) {
+      const parts = line.split(",");
+      if (parts.length < 5) continue;
+      const t = Date.parse(parts[0]);
+      const close = Number(parts[4]);
+      if (!Number.isNaN(t) && Number.isFinite(close) && close > 0) {
+        points.push({ t, v: +close.toFixed(4) });
+      }
+    }
+
+    if (points.length >= 2) {
+      const price = points[points.length - 1].v;
+      const prevClose = points[points.length - 2].v;
+      const changePct = prevClose > 0 ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : 0;
+      return { ok: true, price, prevClose, changePct, points };
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function resolveRealOrCachedChart(sym, rng) {
+  const key = `${sym}|${rng}`;
+  const yahooData = await fetchYahooChartDirect(sym, rng, 6500);
+  if (yahooData && yahooData.points.length >= 2) {
+    realChartCache.set(key, { savedAt: Date.now(), data: yahooData });
+    return yahooData;
+  }
+
+  const stooqData = await fetchStooqChart(sym, 6500);
+  if (stooqData && stooqData.points.length >= 2) {
+    realChartCache.set(key, { savedAt: Date.now(), data: stooqData });
+    return stooqData;
+  }
+
+  const cached = realChartCache.get(key);
+  if (cached && (Date.now() - cached.savedAt) < REAL_CACHE_TTL_MS && cached.data?.points?.length >= 2) {
+    return cached.data;
+  }
+
+  return typeof buildSafeFallbackChart === "function"
+    ? buildSafeFallbackChart(sym, rng)
+    : { ok: true, price: 100, prevClose: 100, changePct: 0, points: [{ t: Date.now() - 900000, v: 100 }, { t: Date.now(), v: 100 }] };
+}
+
 function buildSafeFallbackChart(sym, rng) {
   const now = Date.now();
   const stepMs = rng === "1d" ? 15 * 60 * 1000 : 24 * 60 * 60 * 1000;
@@ -849,30 +981,24 @@ const server = http.createServer(async (req, res) => {
           points
         }));
       }
-            const fb = await fetchQuoteWithFallback(sym);
-      const safeFb = (fb && Array.isArray(fb.points) && fb.points.length > 0)
-        ? fb
-        : buildSafeFallbackChart(sym, rng);
+            const resolvedChart = await resolveRealOrCachedChart(sym, rng);
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       return res.end(JSON.stringify({
         ok: true,
-        price: safeFb.price,
-        prevClose: safeFb.prevClose,
-        changePct: safeFb.changePct,
-        points: safeFb.points
+        price: resolvedChart.price,
+        prevClose: resolvedChart.prevClose,
+        changePct: resolvedChart.changePct,
+        points: resolvedChart.points
       }));
     } catch (e) {
-            const fb = await fetchQuoteWithFallback(sym);
-      const safeFb = (fb && Array.isArray(fb.points) && fb.points.length > 0)
-        ? fb
-        : buildSafeFallbackChart(sym, rng);
+            const resolvedChart = await resolveRealOrCachedChart(sym, rng);
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       return res.end(JSON.stringify({
         ok: true,
-        price: safeFb.price,
-        prevClose: safeFb.prevClose,
-        changePct: safeFb.changePct,
-        points: safeFb.points
+        price: resolvedChart.price,
+        prevClose: resolvedChart.prevClose,
+        changePct: resolvedChart.changePct,
+        points: resolvedChart.points
       }));
     }
   }
