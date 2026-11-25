@@ -1,8 +1,21 @@
-const CACHE_NAME = "combustiveis-pt-v173";
+const CACHE_NAME = "combustiveis-pt-v174";
 const STATIC_ASSETS = [
   "/",
   "/manifest.json"
 ];
+
+async function safeCachePut(cacheName, request, response) {
+  try {
+    if (!response || !response.ok || response.type === "opaque" || response.bodyUsed) {
+      return;
+    }
+    const clone = response.clone();
+    const cache = await caches.open(cacheName);
+    await cache.put(request, clone);
+  } catch (_) {
+    // Evita rejeicoes caso o corpo ja tenha sido consumido ou a cache falhe
+  }
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -10,7 +23,12 @@ self.addEventListener("install", (event) => {
       .then((cache) => Promise.all(
         STATIC_ASSETS.map((asset) =>
           fetch(asset)
-            .then((res) => (res && res.ok ? cache.put(asset, res) : null))
+            .then((res) => {
+              if (res && res.ok && !res.bodyUsed) {
+                return cache.put(asset, res.clone()).catch(() => null);
+              }
+              return null;
+            })
             .catch(() => null)
         )
       ))
@@ -47,9 +65,8 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(req)
         .then((res) => {
-          if (res && res.ok && !url.pathname.startsWith("/api/")) {
-            const copy = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+          if (!url.pathname.startsWith("/api/")) {
+            event.waitUntil(safeCachePut(CACHE_NAME, req, res));
           }
           return res;
         })
@@ -60,12 +77,13 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(
     caches.match(req).then((cached) => {
-      const networkFetch = fetch(req).then((res) => {
-        if (res && res.ok) {
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, res.clone()));
-        }
-        return res;
-      });
+      const networkFetch = fetch(req)
+        .then((res) => {
+          event.waitUntil(safeCachePut(CACHE_NAME, req, res));
+          return res;
+        })
+        .catch(() => null);
+
       return cached || networkFetch;
     })
   );
