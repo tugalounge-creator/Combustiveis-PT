@@ -1,14 +1,19 @@
-const CACHE_NAME = "combustiveis-pt-v172";
+const CACHE_NAME = "combustiveis-pt-v173";
 const STATIC_ASSETS = [
   "/",
-  "/simulador-combustiveis-pt.html",
   "/manifest.json"
 ];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(STATIC_ASSETS))
+      .then((cache) => Promise.all(
+        STATIC_ASSETS.map((asset) =>
+          fetch(asset)
+            .then((res) => (res && res.ok ? cache.put(asset, res) : null))
+            .catch(() => null)
+        )
+      ))
       .then(() => self.skipWaiting())
   );
 });
